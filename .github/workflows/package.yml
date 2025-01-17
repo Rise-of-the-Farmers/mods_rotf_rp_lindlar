@@ -1,0 +1,103 @@
+name: Package and Notify
+
+on:
+  push:
+    branches:
+      - produktiv
+    paths-ignore:
+      - '.github/workflows/**'
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches:
+      - produktiv  # Triggert bei PR-Merges in den Branch 'produktiv'
+
+jobs:
+  build-and-notify:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # 1. Repository auschecken
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      # 2. Release Package vorbereiten
+      - name: Prepare Release Package
+        run: |
+          mkdir release_package
+          rsync -av --exclude='.github/' --exclude='docs/' --exclude='*.md' ./ release_package/
+          cd release_package
+          zip -r ../package.zip .
+
+      # 3. Release erstellen oder aktualisieren
+      - name: Create or Update Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: "Modveröffentlichung v${{ github.run_number }}"
+          draft: false
+          prerelease: false
+
+      # 4. ZIP-Datei an Release anhängen
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: package.zip
+          asset_name: package.zip
+          asset_content_type: application/zip
+
+      # 5. Discord-Benachrichtigung mit Button durch Bot
+      - name: Notify Discord with Bot
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          REPO: ${{ github.repository }}
+          TAG: v${{ github.run_number }}
+        run: |
+          PACKAGE_URL="https://github.com/${REPO}/releases/download/${TAG}/package.zip"
+
+          # JSON-Payload für den Button sicher generieren
+          PAYLOAD=$(jq -n \
+            --arg content "Ein neues Package wurde veröffentlicht! 🚀" \
+            --arg title "Neues Release verfügbar!" \
+            --arg description "Das Release kann hier heruntergeladen werden:" \
+            --arg color "5814783" \
+            --arg url "https://github.com/${REPO}/releases/tag/${TAG}" \
+            --arg button_url "${PACKAGE_URL}" \
+            '{
+              content: $content,
+              embeds: [
+                {
+                  title: $title,
+                  description: $description,
+                  color: ($color | tonumber),
+                  url: $url
+                }
+              ],
+              components: [
+                {
+                  type: 1,
+                  components: [
+                    {
+                      type: 2,
+                      label: "Download Package",
+                      style: 5,
+                      url: $button_url
+                    }
+                  ]
+                }
+              ]
+            }'
+          )
+
+          # Senden der Nachricht über den Discord Bot
+          curl -X POST "https://discord.com/api/v10/channels/${DISCORD_CHANNEL_ID}/messages" \
+            -H "Authorization: Bot ${DISCORD_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}"
